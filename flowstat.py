@@ -7,14 +7,14 @@ import pyshark
 import threading
 import socket
 import json
+from pathlib import Path
 from tabulate import tabulate
-
 
 
 def signal_handler(sig, frame):
     print('You pressed Ctrl+C!')
     try:
-        cap.stop()
+        cap.force_stop()
     except:
         exit(0)
 
@@ -37,6 +37,18 @@ class PacketCapture(threading.Thread):
         self.is_live = not ".pcap" in self.target_name
         self.l2_conversation_info = dict()
         self.l4_conversation_info = dict()
+        self.print_flow_table_enabled = True
+        self.dump_expected_json_enabled = True
+        self.running_as_application = False
+
+    def set_print_flow_table(self, value:bool):
+        self.print_flow_table_enabled = value
+    
+    def set_dump_expected_json_enabled(self, value:bool):
+        self.dump_expected_json_enabled = value
+
+    def set_running_as_application(self, value:bool):
+        self.running_as_application = value
 
     @staticmethod
     def make_two_tuple(srcmac, dstmac):
@@ -47,6 +59,10 @@ class PacketCapture(threading.Thread):
         return (min(srcip, dstip), min(srcport,dstport), max(srcip,dstip), max(srcport,dstport), l4proto)
 
     def print_flow_table(self):
+
+        if not self.print_flow_table_enabled:
+            return
+
         print("> Flow summary")
 
         print( tabulate(
@@ -56,6 +72,34 @@ class PacketCapture(threading.Thread):
             showindex="always" 
         ) )
         pass
+
+    def dump_expected_json(self):
+
+        if not self.dump_expected_json_enabled:
+            return
+
+        d = dict()
+        d["total_flow_count"] = len(self.l4_conversation_info.values())
+        d["flows"] = list()
+
+        flow_id = 1
+        for flow_info in self.l4_conversation_info.values():
+            d["flows"].append(
+                { 
+                    "flow_id" : flow_id ,
+                    "protocol_name": flow_info[6]
+                }
+            )
+
+            flow_id = flow_id + 1
+            pass
+        
+        file_path = Path(self.target_name)
+        json_file_name = file_path.stem + ".json"
+
+        with open(json_file_name, 'w') as f:
+            f.write(json.dumps(d, indent=2))
+
 
     def packet_callback(self, pkt):
         try:
@@ -114,11 +158,14 @@ class PacketCapture(threading.Thread):
             # ignore packets that aren't TCP/UDP or IPv4
             pass
 
+    def force_stop(self):
+        self.stop()
+        raise Exception("interrupted")
 
     def stop(self):
         self.capture = 0
         self.print_flow_table()
-        raise Exception("interrupted")
+        self.dump_expected_json()
         
 
     def run(self):
@@ -126,7 +173,11 @@ class PacketCapture(threading.Thread):
             capture = pyshark.FileCapture(self.target_name, disable_protocol="data-text-lines")
             print(capture.get_parameters())
             capture.apply_on_packets(self.packet_callback)
-            os.kill(os.getpid(), signal.SIGINT)
+            if self.running_as_application:
+                os.kill(os.getpid(), signal.SIGINT)
+            else:
+                self.stop()
+
         else:
             capture = pyshark.LiveCapture(interface=self.target_name)
             capture.apply_on_packets(self.packet_callback)
@@ -140,46 +191,17 @@ class PacketCapture(threading.Thread):
                 print("Capture has crashed")
 
 
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, signal_handler)
+    print('Press Ctrl+C to stop live capture')
 
-
-def dataset_search(data_path:Path):
-    for d in data_path:
-
-
-
-
-
-
-def inspect_json(json_path:Path):
-    
-    global flow_id
-
-    tokenized = str(json_path.stem).split("_")
-    proto_under_test = tokenized[len(tokenized)-2].lower()
-    pcap_filename = Path(str(json_path).replace(".json", "")).name
-
-    print(proto_under_test + " in " +  pcap_filename)
-
-    flow_id = +1
-    flow_proto_name = protocol_l7
-
-    with open(json_path, "r") as f
-        o = json.load(f)
-
-    
-
-
-
-
-signal.signal(signal.SIGINT, signal_handler)
-print('Press Ctrl+C to stop live capture')
-
-if len(sys.argv) == 1:
-    cap = PacketCapture("Any")
-else:
-    cap = PacketCapture(sys.argv[1])
-cap.run()
-signal.pause()
-cap.stop()
+    if len(sys.argv) == 1:
+        cap = PacketCapture("Any")
+    else:
+        cap = PacketCapture(sys.argv[1])
+    cap.set_running_as_application(True)
+    cap.run()
+    signal.pause()
+    cap.stop()
 
 
